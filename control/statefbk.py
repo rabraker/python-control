@@ -72,7 +72,7 @@ def place(A, B, p):
     >>> K = place(A, B, [-2, -5])
     """
 
-    # Make sure that SLICOT is installed
+# Make sure that SLICOT is installed
     try:
         from slycot import sb01bd
     except ImportError:

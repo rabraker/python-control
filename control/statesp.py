@@ -10,7 +10,7 @@ python-control library.
 
 # Python 3 compatibility (needs to go here)
 from __future__ import print_function
-from __future__ import division # for _convertToStateSpace
+from __future__ import division  # for _convertToStateSpace
 
 """Copyright (c) 2010 by California Institute of Technology
 All rights reserved.
@@ -62,16 +62,18 @@ from scipy.signal import lti, cont2discrete
 # from exceptions import Exception
 import warnings
 from .lti import LTI, timebase, timebaseEqual, isdtime
+from .exception import slycot_check
 from .xferfcn import _convertToTransferFunction
 from copy import deepcopy
 
 __all__ = ['StateSpace', 'ss', 'rss', 'drss', 'tf2ss', 'ssdata']
 
+
 class StateSpace(LTI):
     """A class for representing state-space models
 
-    The StateSpace class is used to represent state-space realizations of linear
-    time-invariant (LTI) systems:
+    The StateSpace class is used to represent state-space realizations of
+    linear time-invariant (LTI) systems:
 
         dx/dt = A x + B u
             y = C x + D u
@@ -103,7 +105,7 @@ class StateSpace(LTI):
         if len(args) == 4:
             # The user provided A, B, C, and D matrices.
             (A, B, C, D) = args
-            dt = None;
+            dt = None
         elif len(args) == 5:
             # Discrete time system
             (A, B, C, D, dt) = args
@@ -379,7 +381,7 @@ but B has %i row(s)\n(output(s))." % (self.inputs, other.outputs))
         return array(resp)
 
     # Method for generating the frequency response of the system
-    def freqresp(self, omega):
+    def freqresp(self, omega, method='slycot'):
         """Evaluate the system's transfer func. at a list of ang. frequencies.
 
         mag, phase, omega = self.freqresp(omega)
@@ -390,13 +392,77 @@ but B has %i row(s)\n(output(s))." % (self.inputs, other.outputs))
         input omega.
 
         """
-        # when evaluating at many frequencies, much faster to convert to
-        # transfer function first and then evaluate, than to solve an
-        # n-dimensional linear system at each frequency
-        tf = _convertToTransferFunction(self)
-        return tf.freqresp(omega)
+        # In case omega is passed in as a list, rather than a proper array.
+        omega = np.asarray(omega)
 
-    # Compute poles and zeros
+        numFreqs = len(omega)
+        mags = np.empty((self.outputs, self.inputs, numFreqs))
+        phases = np.empty((self.outputs, self.inputs, numFreqs))
+
+        if isdtime(self, strict=True):
+            dt = timebase(self)
+            cmplx_freqs = exp(1.j * omega * dt)
+            if ((omega * dt).any() > pi):
+                warnings.warn("evalfr: frequency evaluation above Nyquist frequency")
+        else:
+            cmplx_freqs = omega * 1.j
+
+        # Try to import slycot first, fall back to the python
+        # compatibility port if it's unavailible.
+        # method ='horner'
+        if method == 'slycot':
+            try:
+                from slycot import tb05ad
+                method == 'horner'
+            except:
+                warn_text = ("Cannot find TB05AD in slycot installation. "
+                             "Please upgrade In the meantime, pass param"
+                             "eter doslycot=False")
+                warnings.warn(warn_text)
+                method = 'horner'
+
+        if method == 'slycot':
+            # The first call both evalates C(sI-A)^-1 B and also returns
+            # balanced and transformed matrices at, bt, ct.
+            n = np.shape(self.A)[0]
+            m = self.inputs
+            p = self.outputs
+            result = tb05ad(n, m, p, cmplx_freqs[0], self.A,
+                            self.B, self.C, job='all')
+            # result = (at, bt, ct, g_i, rcond, ev, hinvb)
+            at = result[0]
+            bt = result[1]
+            ct = result[2]
+            if result[-1] !=0:
+                raise ValueError("bad result")
+            
+            # slycot freqency eval does not include direct feedthrough.
+            g_i = result[3] + self.D
+            mags[:, :, 0] = np.abs(g_i)
+            phases[:, :, 0] = np.angle(g_i)
+            for kk, cmplx_freqs_kk in enumerate(cmplx_freqs[1:numFreqs]):
+                #
+                result = tb05ad(n, m, p, cmplx_freqs_kk, at,
+                                    bt, ct, job='hess')
+                if result[-1] !=0:
+                    raise ValueError("bad result")
+                g_i = result[0] + self.D
+                # kk+1 because kk starts at 0, but zero-th spot is already filled.
+                mags[:, :, kk+1] = np.abs(g_i)
+                phases[:, :, kk+1] = np.angle(g_i)
+        if method == 'horner':
+            # Slycot unavailible. Fall back to horner.
+            for kk, cmplx_freqs_kk in enumerate(cmplx_freqs):
+                g_i = self.horner(cmplx_freqs_kk)
+                mags[:, :, kk] = np.abs(g_i)
+                phases[:, :, kk] = np.angle(g_i)
+        if method == 'xferfcn':
+            tf = _convertToTransferFunction(self)
+            mags, phases, omega = tf.freqresp(omega)
+
+        return mags, phases, omega
+
+
     def pole(self):
         """Compute the poles of a state space system."""
 
@@ -1113,6 +1179,7 @@ object.")
         return _convertToStateSpace(sys)
     else:
         raise ValueError("Needs 1 or 2 arguments; received %i." % len(args))
+
 
 def rss(states=1, outputs=1, inputs=1):
     """
