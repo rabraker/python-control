@@ -428,7 +428,7 @@ but B has %i row(s)\n(output(s))." % (self.inputs, other.outputs))
             m = self.inputs
             p = self.outputs
             result = tb05ad(n, m, p, cmplx_freqs[0], self.A,
-                            self.B, self.C, job='all')
+                            self.B, self.C, job='NG')
             # result = (at, bt, ct, g_i, rcond, ev, hinvb)
             at = result[0]
             bt = result[1]
@@ -443,7 +443,7 @@ but B has %i row(s)\n(output(s))." % (self.inputs, other.outputs))
             for kk, cmplx_freqs_kk in enumerate(cmplx_freqs[1:numFreqs]):
                 #
                 result = tb05ad(n, m, p, cmplx_freqs_kk, at,
-                                    bt, ct, job='hess')
+                                    bt, ct, job='NH')
                 if result[-1] !=0:
                     raise ValueError("bad result")
                 g_i = result[0] + self.D

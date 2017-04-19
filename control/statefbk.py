@@ -45,10 +45,10 @@ import scipy as sp
 from . import statesp
 from .exception import ControlSlycot, ControlArgument, ControlDimension
 
-__all__ = ['ctrb', 'obsv', 'gram', 'place', 'lqr', 'acker']
+__all__ = ['ctrb', 'obsv', 'gram', 'place', 'dlqr', 'lqr', 'acker']
 
 # Pole placement
-def place(A, B, p):
+def place(A, B, p, dico='C'):
     """Place closed loop eigenvalues
 
     Parameters
@@ -91,12 +91,21 @@ def place(A, B, p):
 
     # SB01BD sets eigenvalues with real part less than alpha
     # We want to place all poles of the system => set alpha to minimum
-    alpha = min(system_eigs.real);
+
+    # My Edit. It seems that if we set alpha strictly equal to minimum
+    # eigenvalue, SB01BD will complain in certain cases. Also, add here
+    # for discrete case.
+    if dico == 'C':
+        alpha = min(system_eigs.real)
+        alpha = alpha - 0.95*np.abs(alpha)
+    elif dico == 'D':
+        alpha = min(np.abs(system_eigs))
+        alpha = alpha*.95
 
     # Call SLICOT routine to place the eigenvalues
     A_z,w,nfp,nap,nup,F,Z = \
         sb01bd(B_mat.shape[0], B_mat.shape[1], len(placed_eigs), alpha,
-               A_mat, B_mat, placed_eigs, 'C');
+               A_mat, B_mat, placed_eigs, dico);
 
     # Return the gain matrix, with MATLAB gain convention
     return -F
@@ -142,6 +151,113 @@ def acker(A, B, poles):
 
     K = K[-1][:]                # Extract the last row
     return K
+
+def dlqr(*args, **keywords):
+    """Linear quadratic regulator design for discrete time state space
+    system.
+
+    The lqr() function computes the optimal state feedback controller
+    that minimizes the quadratic cost
+
+    .. math:: J = \int_0^\infty (x' Q x + u' R u + 2 x' N u) dt
+
+    The function can be called with either 3, 4, or 5 arguments:
+
+    * ``lqr(sys, Q, R)``
+    * ``lqr(sys, Q, R, N)``
+    * ``lqr(A, B, Q, R)``
+    * ``lqr(A, B, Q, R, N)``
+
+    where `sys` is an `LTI` object, and `A`, `B`, `Q`, `R`, and `N` are
+    2d arrays or matrices of appropriate dimension.
+
+    Parameters
+    ----------
+    A, B: 2-d array
+        Dynamics and input matrices
+    sys: LTI (StateSpace or TransferFunction)
+        Linear I/O system
+    Q, R: 2-d array
+        State and input weight matrices
+    N: 2-d array, optional
+        Cross weight matrix
+
+    Returns
+    -------
+    K: 2-d array
+        State feedback gains
+    S: 2-d array
+        Solution to Riccati equation
+    E: 1-d array
+        Eigenvalues of the closed loop system
+
+    Examples
+    --------
+    >>> K, S, E = lqr(sys, Q, R, [N])
+    >>> K, S, E = lqr(A, B, Q, R, [N])
+
+    """
+
+    # Make sure that SLICOT is installed
+    try:
+        from slycot import sb02md
+        from slycot import sb02mt
+    except ImportError:
+        raise ControlSlycot("can't find slycot module 'sb02md' or 'sb02nt'")
+
+    #
+    # Process the arguments and figure out what inputs we received
+    #
+
+    # Get the system description
+    if (len(args) < 3):
+        raise ControlArgument("not enough input arguments")
+
+    try:
+        # If this works, we were (probably) passed a system as the
+        # first argument; extract A and B
+        A = np.array(args[0].A, ndmin=2, dtype=float);
+        B = np.array(args[0].B, ndmin=2, dtype=float);
+        index = 1;
+    except AttributeError:
+        # Arguments should be A and B matrices
+        A = np.array(args[0], ndmin=2, dtype=float);
+        B = np.array(args[1], ndmin=2, dtype=float);
+        index = 2;
+
+    # Get the weighting matrices (converting to matrices, if needed)
+    Q = np.array(args[index], ndmin=2, dtype=float);
+    R = np.array(args[index+1], ndmin=2, dtype=float);
+    if (len(args) > index + 2):
+        N = np.array(args[index+2], ndmin=2, dtype=float);
+    else:
+        N = np.zeros((Q.shape[0], R.shape[1]));
+
+    # Check dimensions for consistency
+    nstates = B.shape[0];
+    ninputs = B.shape[1];
+    if (A.shape[0] != nstates or A.shape[1] != nstates):
+        raise ControlDimension("inconsistent system dimensions")
+
+    elif (Q.shape[0] != nstates or Q.shape[1] != nstates or
+          R.shape[0] != ninputs or R.shape[1] != ninputs or
+          N.shape[0] != nstates or N.shape[1] != ninputs):
+        print Q.shape, R.shape, N.shape,
+        print nstates, ninputs
+        raise ControlDimension("incorrect weighting matrix dimensions")
+
+
+
+    from scipy import linalg
+    X = linalg.solve_discrete_are(A, B,Q, R, e=None, s=N)
+ 
+    #               -1
+    # F = (R + B'XB)  (B'XA + L')                           (1)
+    K = np.linalg.solve(R+B.T.dot(X).dot(B), B.T.dot(X).dot(A) + N.T);
+    # S = X;
+
+
+    return K, X, 
 
 def lqr(*args, **keywords):
     """Linear quadratic regulator design
@@ -239,10 +355,13 @@ def lqr(*args, **keywords):
         sb02mt(nstates, ninputs, B, R, A, Q, N, jobl='N');
 
     # Call the SLICOT function
+
     X,rcond,w,S,U,A_inv = sb02md(nstates, A_b, G, Q_b, 'C')
 
     # Now compute the return value
     # We assume that R is positive definite and, hence, invertible
+                  # -1
+       # F = (R + B'XB)  (B'XA + L')                           (1)
     K = np.linalg.solve(R, np.dot(B.T, X) + N.T);
     S = X;
     E = w[0:nstates];
