@@ -559,7 +559,8 @@ class InputOutputSystem(object):
         # Return the newly created system
         return newsys
 
-    def linearize(self, x0, u0, t=0, params={}, eps=1e-6):
+    def linearize(self, x0, u0, t=0, params={}, eps=1e-6,
+                  jacobian_computer=None):
         """Linearize an input/output system at a given state and input.
 
         Return the linearization of an input/output system at a given state
@@ -572,44 +573,31 @@ class InputOutputSystem(object):
         # numerical linearization use the `_rhs()` and `_out()` member
         # functions.
         #
-
-        # Figure out dimensions if they were not specified.
-        nstates = _find_size(self.nstates, x0)
-        ninputs = _find_size(self.ninputs, u0)
-
-        # Convert x0, u0 to arrays, if needed
-        if np.isscalar(x0): x0 = np.ones((nstates,)) * x0
-        if np.isscalar(u0): u0 = np.ones((ninputs,)) * u0
-
-        # Compute number of outputs by evaluating the output function
-        noutputs = _find_size(self.noutputs, self._out(t, x0, u0))
+        if jacobian_computer is None:
+            jacobian_computer = _jacobian_fwd_diff
+        # Ensure x0, u0 are arrays, and if needed, determine dimensions.
+        if np.isscalar(x0):
+            nstates = _find_size(self.nstates, x0)
+            x0 = np.ones((nstates,)) * x0
+        else:
+            x0 = np.array(x0)
+        if np.isscalar(u0):
+            ninputs = _find_size(self.ninputs, u0)
+            u0 = np.ones((ninputs,)) * u0
+        else:
+            u0 = np.array(u0)
 
         # Update the current parameters
         self._update_params(params)
 
-        # Compute the nominal value of the update law and output
-        F0 = self._rhs(t, x0, u0)
-        H0 = self._out(t, x0, u0)
-
-        # Create empty matrices that we can fill up with linearizations
-        A = np.zeros((nstates, nstates))        # Dynamics matrix
-        B = np.zeros((nstates, ninputs))        # Input matrix
-        C = np.zeros((noutputs, nstates))       # Output matrix
-        D = np.zeros((noutputs, ninputs))       # Direct term
-
-        # Perturb each of the state variables and compute linearization
-        for i in range(nstates):
-            dx = np.zeros((nstates,))
-            dx[i] = eps
-            A[:, i] = (self._rhs(t, x0 + dx, u0) - F0) / eps
-            C[:, i] = (self._out(t, x0 + dx, u0) - H0) / eps
-
-            # Perturb each of the input variables and compute linearization
-        for i in range(ninputs):
-            du = np.zeros((ninputs,))
-            du[i] = eps
-            B[:, i] = (self._rhs(t, x0, u0 + du) - F0) / eps
-            D[:, i] = (self._out(t, x0, u0 + du) - H0) / eps
+        # Dynamics matrix
+        A = jacobian_computer(lambda x: self._rhs(t, x, u0), x0, eps)
+        # Input matrix
+        B = jacobian_computer(lambda u: self._rhs(t, x0, u), u0, eps)
+        # Output matrix
+        C = jacobian_computer(lambda x: self._out(t, x, u0), x0, eps)
+        # Direct feedthrough term
+        D = jacobian_computer(lambda u: self._out(t, x0, u), u0, eps)
 
         # Create the state space system
         linsys = StateSpace(A, B, C, D, self.dt, remove_useless=False)
@@ -1798,6 +1786,36 @@ def _find_size(sysval, vecval):
         return 0
     else:
         raise ValueError("Can't determine size of system component.")
+
+
+def _jacobian_fwd_diff(F, x0, eps=1e-6):
+    """
+    Given a smooth function :math:`F(x)` where :math:`x \\in R^n` and
+    :math:`F(x) \\in \\mathbb{R}^m`, computes the `m` by `n` Jacobian
+    of :math:`F(x)` in the neighboorhood of `x0`. The computation is
+    done via a forward difference.
+
+    Parameters
+    -----
+    F: Function to compute the jacobian of. F should return a 1D
+       array of size m, and expect to operate on a 1D array of size n.
+    x0: a 1d at around which the Jacobian will be computed.
+    eps: (scalar double) Perturbation size in the forward difference.
+    """
+
+    F0 = F(x0)
+    # Jacobian has size m by n.
+    m = F0.shape[0]
+    n = x0.shape[0]
+    dF_dx = np.zeros((m, n))
+
+    dx = np.zeros((n,))
+    for i in range(n):
+        dx[i] = eps
+        dF_dx[:, i] = (F(x0 + dx) - F0) / eps
+        dx[i] = 0.0
+
+    return dF_dx
 
 
 # Convert a state space system into an input/output system (wrapper)

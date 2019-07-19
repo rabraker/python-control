@@ -136,6 +136,38 @@ class TestIOSys(unittest.TestCase):
         np.testing.assert_array_almost_equal(lti_t, ios_t)
         np.testing.assert_array_almost_equal(lti_y, ios_y, decimal=3)
 
+    def test_jacobian_computer(self):
+        # Test the jacobian forward diff method.
+
+        # 1. R^1 to R^1 function
+        x0 = np.array([1.0])
+        df1_dx = ios._jacobian_fwd_diff(lambda x: x**2, x0, eps=1e-6)
+        np.testing.assert_array_almost_equal(df1_dx, np.array([[2.0]]))
+
+        # 2. R^3 to R^1
+        def f2(x):
+            return np.array([x[0]**2 + x[1]**2 + x[2]**2])
+
+        x0 = np.array([1.0, 2.0, 3.0])
+        df2_dx_exp = np.array([[2.0, 2*x0[1], 2.0*x0[2]]])
+        df2_dx = ios._jacobian_fwd_diff(f2, x0)
+        np.testing.assert_array_almost_equal(df2_dx, df2_dx_exp)
+
+        # 3. R^3 to R^2
+        def f3(x):
+            y1 = x[0]**2 + np.sin(x[2])
+            y2 = x[2]**2 + np.cos(x[1])
+            return np.array([y1, y2])
+
+        def df3_dx(x):
+            return np.array([[2*x[0], 0, np.cos(x[2])],
+                             [0, -np.sin(x[1]), 2*x[2]]])
+
+        x0 = np.array([1.0, 2.0, 3.0])
+        df3_dx_exp = df3_dx(x0)
+        df3_dx = ios._jacobian_fwd_diff(f3, x0)
+        np.testing.assert_array_almost_equal(df3_dx, df3_dx_exp)
+
     def test_linearize(self):
         # Create a single input/single output linear system
         linsys = self.siso_linsys
